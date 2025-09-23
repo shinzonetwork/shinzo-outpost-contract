@@ -13,42 +13,53 @@ contract OutpostTest is Test {
     }
 
     function test_setup() public {
-        uint256 initialCount = outpost.getPaymentCount(address(this));
+        uint256 initialCount = outpost.paymentCount(address(this));
         assertEq(initialCount, 0);
-        uint256 newIndex = outpost.payment{value: 1}("policy1", "identity1", 1);
-        assertEq(newIndex, 0);
-        assertEq(outpost.getPaymentAmount(address(this), newIndex), 1);
+        outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 1);
+        assertEq(outpost.paymentCount(address(this)), 1);
     }
 
-    function test_Payment() public {
-        uint256 index = outpost.payment{value: 1}("policy1", "identity1", 1);
-        assertEq(index, 0);
+    function test_PaymentPrimitive() public {
+        outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 1);
+        assertEq(outpost.paymentCount(address(this)), 1);
     }
 
-    function testFuzz_Payment(string memory policyId, string memory identity, uint256 value) public {
+    function test_PaymentView() public {
+        outpost.payment{value: 1}(Outpost.Resource.VIEW, "identity1", "streamid", 1);
+        assertEq(outpost.paymentCount(address(this)), 1);
+    }
+
+    function test_FailPayment() public {
+        vm.expectRevert();
+        outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "", "streamid", 1);
+    }
+
+    function test_FailPaymentEnum() public {
+        vm.expectRevert();
+        outpost.payment{value: 1}(Outpost.Resource(1), "", "streamid", 1);
+    }
+
+    function testFuzz_Payment(uint256 value) public {
         vm.assume(value > 0);
-        vm.assume(bytes(policyId).length > 0);
-        vm.assume(bytes(identity).length > 0);
         vm.assume(value < 100 ether);
 
-        uint256 expectedIndex = outpost.getPaymentCount(address(this));
-        uint256 index = outpost.payment{value: value}(policyId, identity, 1);
-        assertEq(index, expectedIndex);
+        outpost.payment{value: value}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 1);
+        assertEq(outpost.paymentCount(address(this)), 1);
     }
 
-    function test_PolicyIsLinkedToDigitalID() public {
-        outpost.payment{value: 1}("policy1", "identity1", 1);
-        Outpost.DigitalId memory digitalId = outpost.getDigitalId(address(this));
-        assertEq(digitalId.policies.length, 1);
-        assertEq(digitalId.policies[0].policyId, "policy1");
-        assertNotEq(digitalId.policies[0].policyPaymentId, bytes32(0));
+
+    function test_FailExpirePayment() public {
+        outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
+        vm.warp(block.timestamp + 1);
+        vm.expectRevert();
+        outpost.expirePayment(address(this), 0);
     }
 
     function test_ExpirePayment() public {
-        uint256 index = outpost.payment{value: 1}("policy1", "identity1", 1);
-        vm.warp(block.timestamp + 1);
-        outpost.expirePayment(address(this), index);
-        Outpost.PaymentReceipt memory p = outpost.getPayment(address(this), index);
+        outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
+        vm.warp(block.timestamp + 11);
+        outpost.expirePayment(address(this), 0);
+        Outpost.PaymentReceipt memory p = outpost.getPayment(address(this), 0);
         assertEq(p.expired, true);
     }
 }

@@ -4,127 +4,109 @@ pragma solidity ^0.8.13;
 contract Outpost {
     // Errors
     error PaymentAmountTooLow(uint256 amount);
-    error PolicyIdDoesNotExist(string policyId);
+    error ResourceDoesNotExist(Resource resource);
     error DigitalIdDoesNotExist(string identity);
     error PaymentAlreadyExpired();
     error PaymentNotExpired();
     error ZeroAddress();
+    error Unauthorized();
 
     // Events
-    event PaymentCreated(address indexed user, string indexed policyId, uint256 paymentIndex);
-    event PaymentExpired(address indexed user, uint256 indexed paymentIndex);
-    event DigitalIdCreated(address indexed user, string identity);
+    event PaymentCreated(Resource indexed resource, string identity, string StreamId, uint256 expiration);
+    event PaymentExpired(address indexed user, uint256 indexed paymentId);
 
-    // Structs
-    struct AccessControlPolicy {
-        string policyId;
-        bytes32 policyPaymentId;
+    enum Resource{
+        PRIMITIVE, // 0
+        VIEW // 1
     }
 
-    struct DigitalId {
-        address user;
-        string identity;
-        AccessControlPolicy[] policies;
-    }
 
+    // Payment Receipt 
     struct PaymentReceipt {
-        AccessControlPolicy policy;
+        Resource resource;
         uint256 amount;
         uint256 timestamp;
         uint256 expiration;
         bool expired;
     }
 
+
     // State Variables
     mapping(address => mapping(uint256 => PaymentReceipt)) public payments;
     mapping(address => uint256) public paymentCount;
-    mapping(address => DigitalId) public digitalIds;
+
 
     /**
      * @notice Creates a new payment for a given policy and identity.
-     * @param policyId The ID of the policy to associate with the payment.
+     * @param resource The resource to be paid for.
      * @param identity The digital identity of the user.
+     * @param streamId The ID of the stream.
      * @param expiration The duration in seconds until the payment expires.
-     * @return paymentIndex The index of the newly created payment.
      */
-    function payment(string memory policyId, string memory identity, uint256 expiration)
+    function payment(Resource resource, string memory identity, string memory streamId, uint256 expiration)
         public
         payable
-        returns (uint256)
     {
+        // Validate inputs
         if (msg.value <= 0) revert PaymentAmountTooLow(msg.value);
-        if (bytes(policyId).length == 0) revert PolicyIdDoesNotExist(policyId);
+        if (resource != Resource.PRIMITIVE && resource != Resource.VIEW) revert ResourceDoesNotExist(resource);
         if (bytes(identity).length == 0) revert DigitalIdDoesNotExist(identity);
+        if (bytes(streamId).length == 0) revert DigitalIdDoesNotExist(streamId);
 
-        DigitalId storage digitalId = digitalIds[msg.sender];
-        if (digitalId.user == address(0)) {
-            digitalId.user = msg.sender;
-            digitalId.identity = identity;
-            emit DigitalIdCreated(msg.sender, identity);
-        }
-
-        bytes memory encoded = abi.encodePacked(policyId, msg.sender, block.timestamp);
-        bytes32 policyPaymentId;
-        assembly {
-            policyPaymentId := keccak256(add(encoded, 0x20), mload(encoded))
-        }
-
-        AccessControlPolicy memory newPolicy = AccessControlPolicy(policyId, policyPaymentId);
-
-        digitalId.policies.push(newPolicy);
-
+        // // Generate payment ID
         uint256 paymentIndex = paymentCount[msg.sender];
+
         payments[msg.sender][paymentIndex] = PaymentReceipt({
-            policy: newPolicy,
+            resource: resource,
             amount: msg.value,
             timestamp: block.timestamp,
             expiration: block.timestamp + expiration,
             expired: false
         });
-
         paymentCount[msg.sender]++;
 
-        emit PaymentCreated(msg.sender, policyId, paymentIndex);
-        return paymentIndex;
+        emit PaymentCreated(resource, identity, streamId, expiration);
+
     }
 
     /**
-     * @notice Expires a payment for a given user and payment index.
+     * @notice Expires a payment for a given user and payment index. 
+     * @dev The expiration will be managed by ShinzoHub in production
      * @param user The address of the user who made the payment.
-     * @param paymentIndex The index of the payment to expire.
+     * @param paymentId The ID of the payment to expire.
      * @return success True if the payment was successfully expired.
      */
-    function expirePayment(address user, uint256 paymentIndex) public returns (bool) {
+    function expirePayment(address user, uint256 paymentId) public returns (bool) {
         if (user == address(0)) revert ZeroAddress();
-        PaymentReceipt storage _payment = payments[user][paymentIndex];
+        PaymentReceipt storage _payment = payments[user][paymentId];
         if (_payment.expired) revert PaymentAlreadyExpired();
         if (block.timestamp < _payment.expiration) revert PaymentNotExpired();
 
         _payment.expired = true;
-        emit PaymentExpired(user, paymentIndex);
+        emit PaymentExpired(user, paymentId);
         return true;
     }
 
     /**
      * @notice Retrieves a payment by user and index.
      * @param user The address of the user.
-     * @param paymentIndex The index of the payment.
+     * @param paymentId The ID of the payment.
      * @return Payment struct.
      */
-    function getPayment(address user, uint256 paymentIndex) public view returns (PaymentReceipt memory) {
+    function getPayment(address user, uint256 paymentId) public view returns (PaymentReceipt memory) {
         if (user == address(0)) revert ZeroAddress();
-        return payments[user][paymentIndex];
+        return payments[user][paymentId];
     }
 
     /**
      * @notice Retrieves the amount of a payment.
      * @param user The address of the user.
-     * @param paymentIndex The index of the payment.
+     * @param paymentId The ID of the payment.
      * @return The payment amount.
      */
-    function getPaymentAmount(address user, uint256 paymentIndex) public view returns (uint256) {
+    function getPaymentAmount(address user, uint256 paymentId) public view returns (uint256) {
         if (user == address(0)) revert ZeroAddress();
-        return payments[user][paymentIndex].amount;
+        return payments[user][paymentId].amount;
     }
 
     /**
@@ -137,13 +119,10 @@ contract Outpost {
         return paymentCount[user];
     }
 
-    /**
-     * @notice Retrieves the Digital ID for a user.
-     * @param user The address of the user.
-     * @return DigitalID struct.
-     */
-    function getDigitalId(address user) public view returns (DigitalId memory) {
-        if (user == address(0)) revert ZeroAddress();
-        return digitalIds[user];
-    }
+    // function withdraw() public {
+    //     if (msg.sender != address(0) ) revert Unauthorized();
+    //     (bool success, ) = msg.sender.call{value: address(this).balance}("");
+    //     require(success);   
+    // }
+
 }
