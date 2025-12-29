@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-contract Outpost {
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+
+contract Outpost is AccessControl {
     // Errors
     error PaymentAmountTooLow(uint256 amount);
     error ResourceDoesNotExist(Resource resource);
@@ -30,10 +32,19 @@ contract Outpost {
         bool expired;
     }
 
+    // Constants
+    bytes32 public constant DEFAULT_ADMIN_ROLE = keccak256("DEFAULT_ADMIN_ROLE");
+    bytes32 public constant SHINZO_HUB_ROLE = keccak256("SHINZO_HUB_ROLE");
 
     // State Variables
     mapping(address => mapping(uint256 => PaymentReceipt)) public payments;
     mapping(address => uint256) public paymentCount;
+
+    constructor(address defaultAdmin, address shinzoHub)
+    {
+        _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
+        _grantRole(SHINZO_HUB_ROLE, shinzoHub);
+    }
 
 
     /**
@@ -76,7 +87,7 @@ contract Outpost {
      * @param paymentId The ID of the payment to expire.
      * @return success True if the payment was successfully expired.
      */
-    function expirePayment(address user, uint256 paymentId) public returns (bool) {
+    function expirePayment(address user, uint256 paymentId) onlyRole(SHINZO_HUB_ROLE) public returns (bool) {
         if (user == address(0)) revert ZeroAddress();
         PaymentReceipt storage _payment = payments[user][paymentId];
         if (_payment.expired) revert PaymentAlreadyExpired();
@@ -119,10 +130,13 @@ contract Outpost {
         return paymentCount[user];
     }
 
-    // function withdraw() public {
-    //     if (msg.sender != address(0) ) revert Unauthorized();
-    //     (bool success, ) = msg.sender.call{value: address(this).balance}("");
-    //     require(success);   
-    // }
+    /**
+     * @notice withdraw is only for authorized users
+    */
+    function withdraw() public onlyRole(DEFAULT_ADMIN_ROLE) {
+         if (msg.sender == address(0) ) revert ZeroAddress();
+         (bool success, ) = msg.sender.call{value: address(this).balance}("");
+         require(success);   
+     }
 
 }
