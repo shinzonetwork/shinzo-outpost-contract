@@ -50,7 +50,6 @@ contract OutpostTest is Test {
         assertEq(outpost.paymentCount(address(this)), 1);
     }
 
-
     function test_FailExpirePayment() public {
         outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
         vm.warp(block.timestamp + 1);
@@ -80,7 +79,6 @@ contract OutpostTest is Test {
         assertEq(p.expired, false);
     }
 
-    
     function test_GetPaymentDetails() public {
         outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
         Outpost.PaymentReceipt memory p = outpost.getPayment(address(this), 0);
@@ -90,7 +88,7 @@ contract OutpostTest is Test {
         assertEq(p.timestamp, block.timestamp);
         assertEq(p.expired, false);
     }
-    
+
     function test_GetPaymentDetails2() public {
         outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
         Outpost.PaymentReceipt memory p = outpost.getPayment(address(this), 0);
@@ -113,14 +111,14 @@ contract OutpostTest is Test {
         vm.expectRevert();
         outpost.withdraw();
     }
-    
+
     function test_Withdraw_Success() public {
         outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
         vm.prank(admin);
         outpost.withdraw();
         assertEq(address(outpost).balance, 0);
     }
-    
+
     function test_Withdraw_EmptyBalance() public {
         // Don't make any payment, contract has 0 balance
         vm.prank(admin);

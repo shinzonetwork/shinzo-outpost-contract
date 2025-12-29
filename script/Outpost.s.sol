@@ -18,7 +18,7 @@ contract OutpostScript is Script {
         // outpost =  Outpost(address(0x5FbDB2315678afecb367f032d93F642f64180aa3));
 
         outpost = new Outpost(admin, shinzohub);
-    
+
         outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
         outpost.payment{value: 1}(Outpost.Resource.VIEW, "identity2", "streamid", 10);
         vm.stopBroadcast();
