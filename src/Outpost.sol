@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {AccessControl} from "../lib/openzeppelin-contracts/contracts/access/AccessControl.sol";
 
 contract Outpost is AccessControl {
     // Errors
@@ -33,7 +33,6 @@ contract Outpost is AccessControl {
     }
 
     // Constants
-    bytes32 public constant DEFAULT_ADMIN_ROLE = keccak256("DEFAULT_ADMIN_ROLE");
     bytes32 public constant SHINZO_HUB_ROLE = keccak256("SHINZO_HUB_ROLE");
 
     // State Variables
@@ -135,8 +134,9 @@ contract Outpost is AccessControl {
     */
     function withdraw() public onlyRole(DEFAULT_ADMIN_ROLE) {
          if (msg.sender == address(0) ) revert ZeroAddress();
+        //  if (address(this).balance == 0) revert Unauthorized();
          (bool success, ) = msg.sender.call{value: address(this).balance}("");
-         require(success);   
+         if (!success) revert("Withdraw failed");
      }
 
 }

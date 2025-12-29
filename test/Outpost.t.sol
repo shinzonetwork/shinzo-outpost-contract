@@ -7,8 +7,11 @@ import {Outpost} from "../src/Outpost.sol";
 contract OutpostTest is Test {
     Outpost public outpost;
 
+    address admin = address(0x12345);
+    address shinzohub = address(0x67890);
+
     function setUp() public {
-        outpost = new Outpost();
+        outpost = new Outpost(admin, shinzohub);
         vm.deal(address(this), 100 ether);
     }
 
@@ -52,14 +55,76 @@ contract OutpostTest is Test {
         outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
         vm.warp(block.timestamp + 1);
         vm.expectRevert();
+        vm.prank(shinzohub);
         outpost.expirePayment(address(this), 0);
+        vm.stopPrank();
     }
 
     function test_ExpirePayment() public {
         outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
         vm.warp(block.timestamp + 11);
+        vm.prank(shinzohub);
         outpost.expirePayment(address(this), 0);
+        vm.stopPrank();
         Outpost.PaymentReceipt memory p = outpost.getPayment(address(this), 0);
         assertEq(p.expired, true);
+    }
+
+    function test_GetPayment() public {
+        outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
+        Outpost.PaymentReceipt memory p = outpost.getPayment(address(this), 0);
+        assertEq(uint256(p.resource), uint256(Outpost.Resource.PRIMITIVE));
+        assertEq(p.amount, 1);
+        assertEq(p.expiration, block.timestamp + 10);
+        assertEq(p.timestamp, block.timestamp);
+        assertEq(p.expired, false);
+    }
+
+    
+    function test_GetPaymentDetails() public {
+        outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
+        Outpost.PaymentReceipt memory p = outpost.getPayment(address(this), 0);
+        assertEq(uint256(p.resource), uint256(Outpost.Resource.PRIMITIVE));
+        assertEq(p.amount, 1);
+        assertEq(p.expiration, block.timestamp + 10);
+        assertEq(p.timestamp, block.timestamp);
+        assertEq(p.expired, false);
+    }
+    
+    function test_GetPaymentDetails2() public {
+        outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
+        Outpost.PaymentReceipt memory p = outpost.getPayment(address(this), 0);
+        assertEq(uint256(p.resource), uint256(Outpost.Resource.PRIMITIVE));
+        assertEq(p.amount, 1);
+        assertEq(p.expiration, block.timestamp + 10);
+        assertEq(p.timestamp, block.timestamp);
+        assertEq(p.expired, false);
+    }
+
+    function test_Withdraw() public {
+        outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
+        vm.prank(admin);
+        outpost.withdraw();
+        assertEq(address(outpost).balance, 0);
+    }
+
+    function test_Withdraw_Fail() public {
+        outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
+        vm.expectRevert();
+        outpost.withdraw();
+    }
+    
+    function test_Withdraw_Success() public {
+        outpost.payment{value: 1}(Outpost.Resource.PRIMITIVE, "identity1", "streamid", 10);
+        vm.prank(admin);
+        outpost.withdraw();
+        assertEq(address(outpost).balance, 0);
+    }
+    
+    function test_Withdraw_EmptyBalance() public {
+        // Don't make any payment, contract has 0 balance
+        vm.prank(admin);
+        outpost.withdraw(); // Should succeed even with 0 balance
+        assertEq(address(outpost).balance, 0);
     }
 }
