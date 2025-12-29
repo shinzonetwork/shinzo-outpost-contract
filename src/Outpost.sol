@@ -131,7 +131,7 @@ contract Outpost is AccessControl {
      */
     function withdraw() public onlyRole(DEFAULT_ADMIN_ROLE) {
         if (msg.sender == address(0)) revert ZeroAddress();
-        //  if (address(this).balance == 0) revert Unauthorized();
+        if (address(this).balance == 0) revert Unauthorized();
         (bool success,) = msg.sender.call{value: address(this).balance}("");
         if (!success) revert("Withdraw failed");
     }

@@ -122,7 +122,7 @@ contract OutpostTest is Test {
     function test_Withdraw_EmptyBalance() public {
         // Don't make any payment, contract has 0 balance
         vm.prank(admin);
-        outpost.withdraw(); // Should succeed even with 0 balance
-        assertEq(address(outpost).balance, 0);
+        vm.expectRevert();
+        outpost.withdraw();
     }
 }
