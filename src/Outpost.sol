@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-contract Outpost {
+import {AccessControl} from "../lib/openzeppelin-contracts/contracts/access/AccessControl.sol";
+
+contract Outpost is AccessControl {
     // Errors
     error PaymentAmountTooLow(uint256 amount);
     error ResourceDoesNotExist(Resource resource);
@@ -12,16 +14,15 @@ contract Outpost {
     error Unauthorized();
 
     // Events
-    event PaymentCreated(Resource indexed resource, string identity, string StreamId, uint256 expiration);
+    event PaymentCreated(Resource indexed resource, string identity, string streamId, uint256 expiration);
     event PaymentExpired(address indexed user, uint256 indexed paymentId);
 
-    enum Resource{
+    enum Resource {
         PRIMITIVE, // 0
         VIEW // 1
     }
 
-
-    // Payment Receipt 
+    // Payment Receipt
     struct PaymentReceipt {
         Resource resource;
         uint256 amount;
@@ -30,11 +31,17 @@ contract Outpost {
         bool expired;
     }
 
+    // Constants
+    bytes32 public constant SHINZO_HUB_ROLE = keccak256("SHINZO_HUB_ROLE");
 
     // State Variables
     mapping(address => mapping(uint256 => PaymentReceipt)) public payments;
     mapping(address => uint256) public paymentCount;
 
+    constructor(address defaultAdmin, address shinzoHub) {
+        _grantRole(DEFAULT_ADMIN_ROLE, defaultAdmin);
+        _grantRole(SHINZO_HUB_ROLE, shinzoHub);
+    }
 
     /**
      * @notice Creates a new payment for a given policy and identity.
@@ -66,17 +73,16 @@ contract Outpost {
         paymentCount[msg.sender]++;
 
         emit PaymentCreated(resource, identity, streamId, expiration);
-
     }
 
     /**
-     * @notice Expires a payment for a given user and payment index. 
+     * @notice Expires a payment for a given user and payment index.
      * @dev The expiration will be managed by ShinzoHub in production
      * @param user The address of the user who made the payment.
      * @param paymentId The ID of the payment to expire.
      * @return success True if the payment was successfully expired.
      */
-    function expirePayment(address user, uint256 paymentId) public returns (bool) {
+    function expirePayment(address user, uint256 paymentId) public onlyRole(SHINZO_HUB_ROLE) returns (bool) {
         if (user == address(0)) revert ZeroAddress();
         PaymentReceipt storage _payment = payments[user][paymentId];
         if (_payment.expired) revert PaymentAlreadyExpired();
@@ -119,10 +125,13 @@ contract Outpost {
         return paymentCount[user];
     }
 
-    // function withdraw() public {
-    //     if (msg.sender != address(0) ) revert Unauthorized();
-    //     (bool success, ) = msg.sender.call{value: address(this).balance}("");
-    //     require(success);   
-    // }
-
+    /**
+     * @notice withdraw is only for authorized users
+     */
+    function withdraw() public onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (msg.sender == address(0)) revert ZeroAddress();
+        if (address(this).balance == 0) revert Unauthorized();
+        (bool success,) = msg.sender.call{value: address(this).balance}("");
+        if (!success) revert("Withdraw failed");
+    }
 }
