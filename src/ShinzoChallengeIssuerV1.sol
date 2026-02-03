@@ -141,7 +141,12 @@ contract ShinzoChallengeIssuerV1 {
         require(validitySeconds > 0, "validity=0");
 
         address withdrawalAddress = msg.sender;
-        bytes32 consensusKeyHash = keccak256(consensusPubKeyBytes);
+        bytes32 consensusKeyHash;
+        assembly {
+            let ptr := mload(0x40)
+            calldatacopy(ptr, consensusPubKeyBytes.offset, consensusPubKeyBytes.length)
+            consensusKeyHash := keccak256(ptr, consensusPubKeyBytes.length)
+        }
 
         intentId = nextIntentId++;
         uint64 issuedAt = uint64(block.timestamp);
@@ -208,11 +213,30 @@ contract ShinzoChallengeIssuerV1 {
     // ----------------------------
     // EIP-712 internals
     // ----------------------------
-    function _domainSeparator() internal view returns (bytes32) {
-        return keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(this)));
+    function _domainSeparator() internal view returns (bytes32 result) {
+        bytes32 domainTypehash = EIP712_DOMAIN_TYPEHASH;
+        bytes32 nameHash = NAME_HASH;
+        bytes32 versionHash = VERSION_HASH;
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, domainTypehash)
+            mstore(add(ptr, 0x20), nameHash)
+            mstore(add(ptr, 0x40), versionHash)
+            mstore(add(ptr, 0x60), chainid())
+            mstore(add(ptr, 0x80), address())
+            result := keccak256(ptr, 0xa0)
+        }
     }
 
-    function _hashTypedData(bytes32 structHash) internal view returns (bytes32) {
-        return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+    function _hashTypedData(bytes32 structHash) internal view returns (bytes32 result) {
+        bytes32 domainSep = _domainSeparator();
+        assembly {
+            let ptr := mload(0x40)
+            mstore8(ptr, 0x19)
+            mstore8(add(ptr, 0x01), 0x01)
+            mstore(add(ptr, 0x02), domainSep)
+            mstore(add(ptr, 0x22), structHash)
+            result := keccak256(ptr, 0x42)
+        }
     }
 }
