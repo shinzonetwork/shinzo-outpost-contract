@@ -20,6 +20,7 @@ contract Outpost is AccessControl {
     enum Resource {
         PRIMITIVE, // 0
         VIEW // 1
+
     }
 
     // Payment Receipt

@@ -12,10 +12,9 @@ contract ShinzoChallengeIssuerV1Test is Test {
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 private constant NAME_HASH = keccak256("Shinzo Validator Registration");
     bytes32 private constant VERSION_HASH = keccak256("1");
-    bytes32 private constant REGISTRATION_TYPEHASH =
-        keccak256(
-            "RegistrationChallenge(uint256 intentId,address withdrawalAddress,bytes32 delegateKey,bytes32 consensusKeyHash,uint64 issuedAt,uint64 expiresAt)"
-        );
+    bytes32 private constant REGISTRATION_TYPEHASH = keccak256(
+        "RegistrationChallenge(uint256 intentId,address withdrawalAddress,bytes32 delegateKey,bytes32 consensusKeyHash,uint64 issuedAt,uint64 expiresAt)"
+    );
 
     // Test accounts
     address validator1;
@@ -60,12 +59,7 @@ contract ShinzoChallengeIssuerV1Test is Test {
 
         // Manually compute expected digest
         bytes32 expectedDigest = _computeExpectedDigest(
-            intentId,
-            validator1,
-            DELEGATE_KEY,
-            keccak256(CONSENSUS_PUBKEY),
-            1000,
-            1000 + VALIDITY_SECONDS
+            intentId, validator1, DELEGATE_KEY, keccak256(CONSENSUS_PUBKEY), 1000, 1000 + VALIDITY_SECONDS
         );
 
         assertEq(digest, expectedDigest, "Digest should match expected EIP-712 digest");
@@ -114,12 +108,7 @@ contract ShinzoChallengeIssuerV1Test is Test {
 
         vm.expectEmit(true, true, true, true);
         emit ShinzoChallengeIssuerV1.RegistrationIntentCreated(
-            1,
-            validator1,
-            expectedConsensusKeyHash,
-            DELEGATE_KEY,
-            expectedExpiresAt,
-            expectedDigest
+            1, validator1, expectedConsensusKeyHash, DELEGATE_KEY, expectedExpiresAt, expectedDigest
         );
 
         vm.prank(validator1);
@@ -172,7 +161,8 @@ contract ShinzoChallengeIssuerV1Test is Test {
     // 2.1 Returns same digest as emitted during registrationIntent()
     function test_getDigest_MatchesEmittedDigest() public {
         vm.prank(validator1);
-        (uint256 intentId, bytes32 emittedDigest) = issuer.registrationIntent(CONSENSUS_PUBKEY, DELEGATE_KEY, VALIDITY_SECONDS);
+        (uint256 intentId, bytes32 emittedDigest) =
+            issuer.registrationIntent(CONSENSUS_PUBKEY, DELEGATE_KEY, VALIDITY_SECONDS);
 
         bytes32 retrievedDigest = issuer.getDigest(intentId);
         assertEq(retrievedDigest, emittedDigest, "getDigest should return same digest as emitted");
@@ -190,15 +180,8 @@ contract ShinzoChallengeIssuerV1Test is Test {
 
     // 3.1 Returns correct EIP-712 domain separator
     function test_domainSeparator_ReturnsCorrectValue() public view {
-        bytes32 expectedDomainSeparator = keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH,
-                NAME_HASH,
-                VERSION_HASH,
-                block.chainid,
-                address(issuer)
-            )
-        );
+        bytes32 expectedDomainSeparator =
+            keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(issuer)));
 
         assertEq(issuer.domainSeparator(), expectedDomainSeparator, "domainSeparator should match expected");
     }
@@ -209,15 +192,8 @@ contract ShinzoChallengeIssuerV1Test is Test {
         vm.chainId(137); // Polygon
         ShinzoChallengeIssuerV1 polygonIssuer = new ShinzoChallengeIssuerV1();
 
-        bytes32 expectedPolygonDomain = keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH,
-                NAME_HASH,
-                VERSION_HASH,
-                137,
-                address(polygonIssuer)
-            )
-        );
+        bytes32 expectedPolygonDomain =
+            keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, 137, address(polygonIssuer)));
 
         assertEq(polygonIssuer.domainSeparator(), expectedPolygonDomain, "Domain separator should use correct chainId");
 
@@ -362,14 +338,8 @@ contract ShinzoChallengeIssuerV1Test is Test {
         assertTrue(exists);
 
         // Verify non-existent intent returns default values
-        (
-            address noAddr,
-            bytes32 noDk,
-            bytes32 noCkh,
-            uint64 noIssuedAt,
-            uint64 noExpiresAt,
-            bool noExists
-        ) = issuer.intents(999);
+        (address noAddr, bytes32 noDk, bytes32 noCkh, uint64 noIssuedAt, uint64 noExpiresAt, bool noExists) =
+            issuer.intents(999);
 
         assertEq(noAddr, address(0));
         assertEq(noDk, bytes32(0));
@@ -424,25 +394,12 @@ contract ShinzoChallengeIssuerV1Test is Test {
         uint64 issuedAt,
         uint64 expiresAt
     ) internal view returns (bytes32) {
-        bytes32 domainSep = keccak256(
-            abi.encode(
-                EIP712_DOMAIN_TYPEHASH,
-                NAME_HASH,
-                VERSION_HASH,
-                block.chainid,
-                address(issuer)
-            )
-        );
+        bytes32 domainSep =
+            keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(issuer)));
 
         bytes32 structHash = keccak256(
             abi.encode(
-                REGISTRATION_TYPEHASH,
-                intentId,
-                withdrawalAddress,
-                delegateKey,
-                consensusKeyHash,
-                issuedAt,
-                expiresAt
+                REGISTRATION_TYPEHASH, intentId, withdrawalAddress, delegateKey, consensusKeyHash, issuedAt, expiresAt
             )
         );
 
