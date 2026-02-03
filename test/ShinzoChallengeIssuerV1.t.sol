@@ -394,8 +394,9 @@ contract ShinzoChallengeIssuerV1Test is Test {
         uint64 issuedAt,
         uint64 expiresAt
     ) internal view returns (bytes32) {
-        bytes32 domainSep =
-            keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(issuer)));
+        bytes32 domainSep = keccak256(
+            abi.encode(EIP712_DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(issuer))
+        );
 
         bytes32 structHash = keccak256(
             abi.encode(
