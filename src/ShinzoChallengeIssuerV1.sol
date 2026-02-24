@@ -1,242 +1,337 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-/**
- * @title ShinzoChallengeIssuerV1
- * @notice V1 EVM-side "RegistrationIntent -> Challenge" contract.
- *
- * ## What this contract does
- * - A validator (using their WITHDRAWAL key) calls `registrationIntent(...)`.
- * - The contract stores a minimal "intent" record and emits an event containing an EIP-712 `digest`.
- * - The validator signs the EIP-712 typed data offchain (MetaMask `eth_signTypedData_v4`) to produce `withdrawSig`.
- * - The validator computes a 32-byte `commit` and places it in the SOURCE CHAIN block graffiti.
- * - Your relayer watches source-chain blocks for graffiti, verifies proposer + signature offchain,
- *   and then registers the validator on Shinzo.
- *
- * ## Important: There is NO finalize on this EVM contract
- * This EVM contract is only used to issue a canonical EIP-712 challenge/digest and emit it.
- *
- * ---
- *
- * # What exactly goes into graffiti?
- *
- * After `registrationIntent(...)`, the contract emits `RegistrationIntentCreated(...)` with:
- * - `intentId`
- * - `digest` (EIP-712 digest that must be signed)
- *
- * The validator must:
- *
- * 1) Sign the EIP-712 typed data (same fields used to compute `digest`) with their withdrawal key:
- *    withdrawSig = SignTypedDataV4(domain, RegistrationChallenge(message))
- *
- * 2) Compute the graffiti commitment:
- *
- *    commit = keccak256( abi.encodePacked(digest, withdrawSig) )
- *
- * 3) Put the commitment into the SOURCE CHAIN block graffiti, prefixed for scanning:
- *
- *    "SHINZO:" + hex(commit)
- *
- * Only `commit` needs to be in graffiti. Everything else is recoverable from the event + intentId.
- *
- * ---
- *
- * # Relayer offchain verification checklist (not enforced on EVM)
- * For a given intentId:
- * - Obtain `digest` from the event (or recompute via `getDigest(intentId)`).
- * - Validate the block proposer matches the validator's consensus identity (chain-specific).
- * - Validate EIP-712 signature: recover signer == withdrawalAddress
- * - Validate commit: commit == keccak256(digest || withdrawSig)
- * - Validate time: now <= expiresAt
- *
- * Then relay the proof to Shinzo to finalize registration there.
- */
 contract ShinzoChallengeIssuerV1 {
-    // ----------------------------
-    // EIP-712 domain
-    // ----------------------------
+    uint64 public constant SIGNATURE_WINDOW_SECONDS = 3600;
+
     bytes32 private constant EIP712_DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
-
-    bytes32 private constant NAME_HASH = keccak256("Shinzo Validator Registration");
+    bytes32 private constant NAME_HASH    = keccak256("Shinzo Validator Registration");
     bytes32 private constant VERSION_HASH = keccak256("1");
 
-    /**
-     * @notice The typed data schema validators sign.
-     *
-     * Keep this stable. Changing it changes the meaning of signatures.
-     *
-     * RegistrationChallenge fields:
-     * - intentId: unique id emitted by this contract
-     * - withdrawalAddress: must equal msg.sender at intent creation (V1)
-     * - delegateKey: Shinzo address equivalent (bytes32)
-     * - consensusKeyHash: keccak256(consensusPubKeyBytes) from source chain
-     * - issuedAt: timestamp when intent created
-     * - expiresAt: timestamp when intent expires
-     */
-    bytes32 public constant REGISTRATION_TYPEHASH = keccak256(
-        "RegistrationChallenge(uint256 intentId,address withdrawalAddress,bytes32 delegateKey,bytes32 consensusKeyHash,uint64 issuedAt,uint64 expiresAt)"
-    );
+    bytes32 public constant ATTESTATION_TYPEHASH =
+        keccak256(
+            "AttestationChallenge(uint256 attestationId,address withdrawalAddress,bytes32 delegateKey,bytes32 consensusKeyHash,uint64 createdAt,uint64 signatureDeadline)"
+        );
 
-    // ----------------------------
-    // State
-    // ----------------------------
-    uint256 public nextIntentId = 1;
+    bytes32 public immutable DOMAIN_SEPARATOR;
 
-    struct Intent {
-        address withdrawalAddress; // msg.sender
-        bytes32 delegateKey; // Shinzo address-equivalent (bytes32)
-        bytes32 consensusKeyHash; // keccak256(consensusPubKeyBytes)
-        uint64 issuedAt;
-        uint64 expiresAt;
-        bool exists;
+    bytes2 public constant EXTRADATA_TAG = "SH";
+
+    uint256 private constant POINTER_BYTES     = 15;
+    uint256 private constant POINTER_HEX_CHARS = 30;
+
+    // Avoid heap-allocating the lookup table on every _toHex30 call.
+    bytes16 private constant HEX_CHARS = "0123456789abcdef";
+
+    uint256 private constant SECP256K1N =
+        0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141;
+    uint256 private constant SECP256K1N_HALF = SECP256K1N / 2;
+
+    uint256 public nextAttestationId = 1;
+
+    struct Attestation {
+        address withdrawalAddress;
+        bytes32 delegateKey;
+        bytes   consensusPubKey;
+        uint64  createdAt;
+        uint64  signatureDeadline;
+        bool    signatureSubmitted;
+        uint64  signatureSubmittedAt;
+        bytes   withdrawalSignature;
+        bytes   delegateSignature;
+        bytes15 pointer;
     }
 
-    mapping(uint256 => Intent) public intents;
+    mapping(uint256 => Attestation) public attestations;
+    mapping(bytes15 => uint256) public pointerToAttestationId;
+    mapping(address => uint256) public openAttestationIdByWithdrawal;
 
-    /**
-     * @notice Emitted when a validator creates a registration intent.
-     *
-     * The `digest` is the EIP-712 digest that MUST be signed by the validator's withdrawal key.
-     *
-     * ## What validator writes to graffiti (source chain)
-     *
-     * Let:
-     * - withdrawSig = signature produced by signing the EIP-712 typed data whose digest == `digest`
-     *
-     * Then compute:
-     * - commit = keccak256( abi.encodePacked(digest, withdrawSig) )
-     *
-     * And place in graffiti as:
-     * - "SHINZO:" + hex(commit)
-     */
-    event RegistrationIntentCreated(
-        uint256 indexed intentId,
+    event AttestationCreated(
+        uint256 indexed attestationId,
         address indexed withdrawalAddress,
         bytes32 indexed consensusKeyHash,
         bytes32 delegateKey,
-        uint64 expiresAt,
+        uint64  signatureDeadline,
         bytes32 digest
     );
 
-    // ----------------------------
-    // Main: RegistrationIntent
-    // ----------------------------
-    /**
-     * @notice Create an intent and receive the canonical EIP-712 digest to sign.
-     *
-     * @param consensusPubKeyBytes The validator's consensus pubkey bytes on the SOURCE chain.
-     *                            (ed25519/bls/etc is fine; we store only keccak256 hash)
-     * @param delegateKey Shinzo address equivalent (bytes32). This becomes the operator identity on Shinzo.
-     * @param validitySeconds How long the intent is valid from now (seconds).
-     *
-     * @return intentId Unique id for this intent
-     * @return digest   EIP-712 digest the withdrawal key must sign (TypedData V4)
-     */
-    function registrationIntent(bytes calldata consensusPubKeyBytes, bytes32 delegateKey, uint64 validitySeconds)
+    event AttestationSigned(
+        uint256 indexed attestationId,
+        address indexed withdrawalAddress,
+        bytes15 indexed pointer,
+        bytes32 digest,
+        uint64  signatureSubmittedAt
+    );
+
+    constructor() {
+        DOMAIN_SEPARATOR = keccak256(
+            abi.encode(EIP712_DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(this))
+        );
+    }
+
+    // =========================================================
+    // External mutating functions
+    // =========================================================
+
+    function createAttestation(bytes calldata consensusPubKeyBytes, bytes32 delegateKey)
         external
-        returns (uint256 intentId, bytes32 digest)
+        returns (uint256 attestationId, bytes32 digest)
     {
+        require(
+            consensusPubKeyBytes.length == 33 || consensusPubKeyBytes.length == 65,
+            "bad pubkey len"
+        );
         require(delegateKey != bytes32(0), "delegate=0");
-        require(validitySeconds > 0, "validity=0");
 
         address withdrawalAddress = msg.sender;
-        bytes32 consensusKeyHash;
-        assembly {
-            let ptr := mload(0x40)
-            calldatacopy(ptr, consensusPubKeyBytes.offset, consensusPubKeyBytes.length)
-            consensusKeyHash := keccak256(ptr, consensusPubKeyBytes.length)
+
+        uint256 openId = openAttestationIdByWithdrawal[withdrawalAddress];
+        if (openId != 0) {
+            Attestation storage openA = attestations[openId];
+            bool stillActive = (!openA.signatureSubmitted) && (block.timestamp <= openA.signatureDeadline);
+            require(!stillActive, "active attestation exists");
+            openAttestationIdByWithdrawal[withdrawalAddress] = 0;
         }
 
-        intentId = nextIntentId++;
-        uint64 issuedAt = uint64(block.timestamp);
-        uint64 expiresAt = issuedAt + validitySeconds;
+        // Compute once; reused for both the digest and the event.
+        bytes32 consensusKeyHash = keccak256(consensusPubKeyBytes);
 
-        intents[intentId] = Intent({
-            withdrawalAddress: withdrawalAddress,
-            delegateKey: delegateKey,
-            consensusKeyHash: consensusKeyHash,
-            issuedAt: issuedAt,
-            expiresAt: expiresAt,
-            exists: true
+        attestationId = nextAttestationId++;
+        uint64 createdAt       = uint64(block.timestamp);
+        uint64 signatureDeadline = createdAt + SIGNATURE_WINDOW_SECONDS;
+
+        attestations[attestationId] = Attestation({
+            withdrawalAddress:  withdrawalAddress,
+            delegateKey:        delegateKey,
+            consensusPubKey:    consensusPubKeyBytes,
+            createdAt:          createdAt,
+            signatureDeadline:  signatureDeadline,
+            signatureSubmitted: false,
+            signatureSubmittedAt: 0,
+            withdrawalSignature: "",
+            delegateSignature:  "",
+            pointer:            bytes15(0)
         });
 
-        // EIP-712 digest user must sign with withdrawal key:
-        // digest = keccak256("\x19\x01" || domainSeparator || structHash)
-        digest = _hashTypedData(
-            keccak256(
-                abi.encode(
-                    REGISTRATION_TYPEHASH,
-                    intentId,
-                    withdrawalAddress,
-                    delegateKey,
-                    consensusKeyHash,
-                    issuedAt,
-                    expiresAt
-                )
-            )
+        openAttestationIdByWithdrawal[withdrawalAddress] = attestationId;
+
+        digest = _attestationDigest(
+            attestationId, withdrawalAddress, delegateKey,
+            consensusKeyHash, createdAt, signatureDeadline
         );
 
-        emit RegistrationIntentCreated(intentId, withdrawalAddress, consensusKeyHash, delegateKey, expiresAt, digest);
-    }
-
-    /**
-     * @notice Recompute the EIP-712 digest for an existing intent.
-     * @dev Useful for relayers and clients.
-     */
-    function getDigest(uint256 intentId) external view returns (bytes32 digest) {
-        Intent memory it = intents[intentId];
-        require(it.exists, "no intent");
-
-        digest = _hashTypedData(
-            keccak256(
-                abi.encode(
-                    REGISTRATION_TYPEHASH,
-                    intentId,
-                    it.withdrawalAddress,
-                    it.delegateKey,
-                    it.consensusKeyHash,
-                    it.issuedAt,
-                    it.expiresAt
-                )
-            )
+        emit AttestationCreated(
+            attestationId, withdrawalAddress, consensusKeyHash,
+            delegateKey, signatureDeadline, digest
         );
     }
 
-    /**
-     * @notice EIP-712 domain separator for clients.
-     */
-    function domainSeparator() external view returns (bytes32) {
-        return _domainSeparator();
+    function submitAttestationSignature(
+        uint256 attestationId,
+        bytes calldata withdrawalSignature,
+        bytes calldata delegateSignature
+    )
+        external
+        returns (bytes15 pointer)
+    {
+        Attestation storage a = attestations[attestationId];
+        require(a.withdrawalAddress != address(0), "no attestation");
+        // Check already-signed first — cheapest rejection after existence check.
+        require(!a.signatureSubmitted,              "already signed");
+        require(block.timestamp <= a.signatureDeadline, "sig window closed");
+        require(msg.sender == a.withdrawalAddress,  "not withdrawal");
+        require(withdrawalSignature.length == 65,   "withdrawal sig!=65");
+        require(delegateSignature.length == 65,     "delegate sig!=65");
+
+        bytes32 digest = _attestationDigest(
+            attestationId, a.withdrawalAddress, a.delegateKey,
+            keccak256(a.consensusPubKey), a.createdAt, a.signatureDeadline
+        );
+
+        if (!_isValidSignature(a.withdrawalAddress, digest, withdrawalSignature)) {
+            bytes32 ethSignedDigest = _toEthSignedMessageHash(digest);
+            require(_isValidSignature(a.withdrawalAddress, ethSignedDigest, withdrawalSignature), "bad sig");
+        }
+
+        pointer = bytes15(keccak256(abi.encodePacked(DOMAIN_SEPARATOR, digest, withdrawalSignature)));
+        require(pointerToAttestationId[pointer] == 0, "pointer used");
+
+        a.signatureSubmitted    = true;
+        a.signatureSubmittedAt  = uint64(block.timestamp);
+        a.withdrawalSignature   = withdrawalSignature;
+        a.delegateSignature     = delegateSignature;
+        a.pointer               = pointer;
+
+        pointerToAttestationId[pointer] = attestationId;
+        openAttestationIdByWithdrawal[a.withdrawalAddress] = 0;
+
+        emit AttestationSigned(attestationId, a.withdrawalAddress, pointer, digest, a.signatureSubmittedAt);
     }
 
-    // ----------------------------
-    // EIP-712 internals
-    // ----------------------------
-    function _domainSeparator() internal view returns (bytes32 result) {
-        bytes32 domainTypehash = EIP712_DOMAIN_TYPEHASH;
-        bytes32 nameHash = NAME_HASH;
-        bytes32 versionHash = VERSION_HASH;
+    function clearExpiredOpenAttestation() external {
+        uint256 id = openAttestationIdByWithdrawal[msg.sender];
+        require(id != 0, "no open");
+
+        Attestation storage a = attestations[id];
+        require(!a.signatureSubmitted,          "already signed");
+        require(block.timestamp > a.signatureDeadline, "not expired");
+
+        openAttestationIdByWithdrawal[msg.sender] = 0;
+    }
+
+    // =========================================================
+    // External view functions
+    // =========================================================
+
+    function resolve(bytes15 pointer) external view returns (uint256 attestationId) {
+        attestationId = pointerToAttestationId[pointer];
+        require(attestationId != 0, "unknown pointer");
+    }
+
+    function attestationDigest(uint256 attestationId) external view returns (bytes32 digest) {
+        // Use storage ref — avoids copying the bytes fields into memory.
+        Attestation storage a = attestations[attestationId];
+        require(a.withdrawalAddress != address(0), "no attestation");
+
+        digest = _attestationDigest(
+            attestationId, a.withdrawalAddress, a.delegateKey,
+            keccak256(a.consensusPubKey), a.createdAt, a.signatureDeadline
+        );
+    }
+
+    function attestationCore(uint256 attestationId)
+        external
+        view
+        returns (
+            address withdrawalAddress,
+            bytes32 delegateKey,
+            bytes memory consensusPubKey,
+            uint64  createdAt,
+            uint64  signatureDeadline,
+            bool    signatureSubmitted,
+            uint64  signatureSubmittedAt,
+            bytes memory withdrawalSignature,
+            bytes15 pointer,
+            bytes memory delegateSignature
+        )
+    {
+        Attestation storage a = attestations[attestationId];
+        require(a.withdrawalAddress != address(0), "no attestation");
+
+        withdrawalAddress    = a.withdrawalAddress;
+        delegateKey          = a.delegateKey;
+        consensusPubKey      = a.consensusPubKey;
+        createdAt            = a.createdAt;
+        signatureDeadline    = a.signatureDeadline;
+        signatureSubmitted   = a.signatureSubmitted;
+        signatureSubmittedAt = a.signatureSubmittedAt;
+        withdrawalSignature  = a.withdrawalSignature;
+        pointer              = a.pointer;
+        delegateSignature    = a.delegateSignature;
+    }
+
+    // =========================================================
+    // ExtraData helpers
+    // =========================================================
+
+    function encodeExtraDataString(bytes15 pointer) external pure returns (string memory) {
+        return string(abi.encodePacked("SH", _toHex30(pointer)));
+    }
+
+    function pointerFromExtraData(bytes calldata headerExtra) external pure returns (bytes15 pointer) {
+        return _pointerFromExtraData(headerExtra);
+    }
+
+    function resolveFromExtraData(bytes calldata headerExtra) external view returns (uint256 attestationId) {
+        bytes15 pointer = _pointerFromExtraData(headerExtra);
+        attestationId = pointerToAttestationId[pointer];
+        require(attestationId != 0, "unknown pointer");
+    }
+
+    // =========================================================
+    // Internal helpers
+    // =========================================================
+
+    /// @dev Shared logic for both the external wrapper and resolveFromExtraData,
+    ///      avoiding the gas cost of a self-call via `this`.
+    function _pointerFromExtraData(bytes calldata headerExtra) internal pure returns (bytes15 pointer) {
+        require(headerExtra.length == 32, "extra len != 32");
+        require(headerExtra[0] == 0x53 && headerExtra[1] == 0x48, "bad tag");
+
+        uint120 acc = 0;
+        for (uint256 i = 0; i < 15; i++) {
+            uint8 hi = _fromHexChar(uint8(headerExtra[2 + 2 * i]));
+            uint8 lo = _fromHexChar(uint8(headerExtra[2 + 2 * i + 1]));
+            acc = (acc << 8) | uint120((hi << 4) | lo);
+        }
+        pointer = bytes15(acc);
+    }
+
+    function _attestationDigest(
+        uint256 attestationId,
+        address withdrawalAddress,
+        bytes32 delegateKey,
+        bytes32 consensusKeyHash,
+        uint64  createdAt,
+        uint64  signatureDeadline
+    ) internal view returns (bytes32) {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                ATTESTATION_TYPEHASH,
+                attestationId,
+                withdrawalAddress,
+                delegateKey,
+                consensusKeyHash,
+                createdAt,
+                signatureDeadline
+            )
+        );
+        return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
+    }
+
+    function _toEthSignedMessageHash(bytes32 h) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", h));
+    }
+
+    function _isValidSignature(address expectedSigner, bytes32 digest, bytes calldata sig)
+        internal
+        pure
+        returns (bool)
+    {
+        (bytes32 r, bytes32 s, uint8 v) = _splitSig(sig);
+
+        if (v < 27) v += 27;
+        if (v != 27 && v != 28) return false;
+        if (uint256(s) > SECP256K1N_HALF) return false;
+
+        address signer = ecrecover(digest, v, r, s);
+        if (signer == address(0)) return false;
+
+        return signer == expectedSigner;
+    }
+
+    function _splitSig(bytes calldata sig) internal pure returns (bytes32 r, bytes32 s, uint8 v) {
         assembly {
-            let ptr := mload(0x40)
-            mstore(ptr, domainTypehash)
-            mstore(add(ptr, 0x20), nameHash)
-            mstore(add(ptr, 0x40), versionHash)
-            mstore(add(ptr, 0x60), chainid())
-            mstore(add(ptr, 0x80), address())
-            result := keccak256(ptr, 0xa0)
+            r := calldataload(sig.offset)
+            s := calldataload(add(sig.offset, 32))
+            v := byte(0, calldataload(add(sig.offset, 64)))
         }
     }
 
-    function _hashTypedData(bytes32 structHash) internal view returns (bytes32 result) {
-        bytes32 domainSep = _domainSeparator();
-        assembly {
-            let ptr := mload(0x40)
-            mstore8(ptr, 0x19)
-            mstore8(add(ptr, 0x01), 0x01)
-            mstore(add(ptr, 0x02), domainSep)
-            mstore(add(ptr, 0x22), structHash)
-            result := keccak256(ptr, 0x42)
+    function _toHex30(bytes15 data) internal pure returns (bytes memory out) {
+        out = new bytes(POINTER_HEX_CHARS);
+        for (uint256 i = 0; i < POINTER_BYTES; i++) {
+            uint8 b = uint8(data[i]);
+            out[2 * i]     = HEX_CHARS[b >> 4];
+            out[2 * i + 1] = HEX_CHARS[b & 0x0f];
         }
+    }
+
+    function _fromHexChar(uint8 c) internal pure returns (uint8) {
+        if (c >= 48 && c <= 57)  return c - 48;
+        if (c >= 97 && c <= 102) return c - 87;
+        if (c >= 65 && c <= 70)  return c - 55;
+        revert("bad hex char");
     }
 }
