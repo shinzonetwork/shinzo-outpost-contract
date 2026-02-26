@@ -21,7 +21,6 @@ contract ShinzoChallengeIssuerV1 {
     uint256 private constant POINTER_BYTES     = 15;
     uint256 private constant POINTER_HEX_CHARS = 30;
 
-    // Avoid heap-allocating the lookup table on every _toHex30 call.
     bytes16 private constant HEX_CHARS = "0123456789abcdef";
 
     uint256 private constant SECP256K1N =
@@ -47,6 +46,16 @@ contract ShinzoChallengeIssuerV1 {
     mapping(bytes15 => uint256) public pointerToAttestationId;
     mapping(address => uint256) public openAttestationIdByWithdrawal;
 
+    /**
+     * Emitted when a new attestation is created via createAttestation.
+     *
+     * @param attestationId       Auto-incremented attestation identifier.
+     * @param withdrawalAddress   The msg.sender who created the attestation (validator).
+     * @param consensusKeyHash    keccak256 of the raw consensus public key bytes.
+     * @param delegateKey         The delegate key (address zero-padded to bytes32).
+     * @param signatureDeadline   Unix timestamp after which signatures are no longer accepted.
+     * @param digest              EIP-712 typed-data digest that must be signed by both parties.
+     */
     event AttestationCreated(
         uint256 indexed attestationId,
         address indexed withdrawalAddress,
@@ -56,6 +65,15 @@ contract ShinzoChallengeIssuerV1 {
         bytes32 digest
     );
 
+    /**
+     * Emitted when both signatures are submitted via submitAttestationSignature.
+     *
+     * @param attestationId        The attestation that was signed.
+     * @param withdrawalAddress    The validator who owns this attestation.
+     * @param pointer              15-byte extraData pointer derived from domain separator + digest + withdrawal sig.
+     * @param digest               The EIP-712 digest that was signed.
+     * @param signatureSubmittedAt Unix timestamp when the signatures were submitted.
+     */
     event AttestationSigned(
         uint256 indexed attestationId,
         address indexed withdrawalAddress,
@@ -70,10 +88,19 @@ contract ShinzoChallengeIssuerV1 {
         );
     }
 
-    // =========================================================
-    // External mutating functions
-    // =========================================================
-
+    /**
+     * Creates a new attestation challenge for the calling validator.
+     * Only one open (unsigned, non-expired) attestation may exist per withdrawal address
+     * at a time. If a previous one expired without being signed, it is automatically cleared.
+     *
+     * @param  consensusPubKeyBytes  Compressed (33 bytes) or uncompressed (65 bytes) secp256k1
+     *                               consensus public key of the validator.
+     * @param  delegateKey           Delegate address zero-padded to bytes32. This is the key
+     *                               that will co-sign the attestation digest.
+     * @return attestationId         Auto-incremented identifier for this attestation.
+     * @return digest                EIP-712 typed-data digest that both the withdrawal address
+     *                               and the delegate must sign before the signature deadline.
+     */
     function createAttestation(bytes calldata consensusPubKeyBytes, bytes32 delegateKey)
         external
         returns (uint256 attestationId, bytes32 digest)
@@ -94,7 +121,6 @@ contract ShinzoChallengeIssuerV1 {
             openAttestationIdByWithdrawal[withdrawalAddress] = 0;
         }
 
-        // Compute once; reused for both the digest and the event.
         bytes32 consensusKeyHash = keccak256(consensusPubKeyBytes);
 
         attestationId = nextAttestationId++;
@@ -127,6 +153,21 @@ contract ShinzoChallengeIssuerV1 {
         );
     }
 
+    /**
+     * Submits both signatures for an open attestation. Must be called by the same
+     * withdrawal address (msg.sender) that created it, before the signature deadline.
+     * The withdrawal signature is verified on-chain against the EIP-712 digest (accepts
+     * both raw EIP-712 and eth_sign prefixed signatures). A unique 15-byte pointer is
+     * derived and stored, which the validator embeds in block extraData.
+     *
+     * @param  attestationId        The ID returned by createAttestation.
+     * @param  withdrawalSignature  65-byte ECDSA signature of the digest, signed by the
+     *                              withdrawal address (validator).
+     * @param  delegateSignature    65-byte ECDSA signature of the digest, signed by the
+     *                              delegate key.
+     * @return pointer              15-byte extraData pointer. Encode with encodeExtraDataString()
+     *                              to get the 32-byte hex string for block extraData.
+     */
     function submitAttestationSignature(
         uint256 attestationId,
         bytes calldata withdrawalSignature,
@@ -137,7 +178,6 @@ contract ShinzoChallengeIssuerV1 {
     {
         Attestation storage a = attestations[attestationId];
         require(a.withdrawalAddress != address(0), "no attestation");
-        // Check already-signed first — cheapest rejection after existence check.
         require(!a.signatureSubmitted,              "already signed");
         require(block.timestamp <= a.signatureDeadline, "sig window closed");
         require(msg.sender == a.withdrawalAddress,  "not withdrawal");
@@ -180,17 +220,12 @@ contract ShinzoChallengeIssuerV1 {
         openAttestationIdByWithdrawal[msg.sender] = 0;
     }
 
-    // =========================================================
-    // External view functions
-    // =========================================================
-
     function resolve(bytes15 pointer) external view returns (uint256 attestationId) {
         attestationId = pointerToAttestationId[pointer];
         require(attestationId != 0, "unknown pointer");
     }
 
     function attestationDigest(uint256 attestationId) external view returns (bytes32 digest) {
-        // Use storage ref — avoids copying the bytes fields into memory.
         Attestation storage a = attestations[attestationId];
         require(a.withdrawalAddress != address(0), "no attestation");
 
@@ -231,10 +266,6 @@ contract ShinzoChallengeIssuerV1 {
         delegateSignature    = a.delegateSignature;
     }
 
-    // =========================================================
-    // ExtraData helpers
-    // =========================================================
-
     function encodeExtraDataString(bytes15 pointer) external pure returns (string memory) {
         return string(abi.encodePacked("SH", _toHex30(pointer)));
     }
@@ -249,12 +280,6 @@ contract ShinzoChallengeIssuerV1 {
         require(attestationId != 0, "unknown pointer");
     }
 
-    // =========================================================
-    // Internal helpers
-    // =========================================================
-
-    /// @dev Shared logic for both the external wrapper and resolveFromExtraData,
-    ///      avoiding the gas cost of a self-call via `this`.
     function _pointerFromExtraData(bytes calldata headerExtra) internal pure returns (bytes15 pointer) {
         require(headerExtra.length == 32, "extra len != 32");
         require(headerExtra[0] == 0x53 && headerExtra[1] == 0x48, "bad tag");
