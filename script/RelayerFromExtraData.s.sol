@@ -33,7 +33,7 @@ contract RelayerFromExtraData is Script {
 
         (
             address withdrawalAddress,
-            bytes32 delegateKey,
+            address delegateKey,
             bytes memory consensusPubKey,
             uint64  createdAt,
             uint64  signatureDeadline,
@@ -45,8 +45,7 @@ contract RelayerFromExtraData is Script {
         ) = issuer.attestationCore(attestationId);
 
         console.log("Withdrawal address:", withdrawalAddress);
-        console.log("Delegate key:");
-        console.logBytes32(delegateKey);
+        console.log("Delegate:", delegateKey);
         console.log("Consensus public key:");
         console.logBytes(consensusPubKey);
         console.log("Created at:        ", createdAt);

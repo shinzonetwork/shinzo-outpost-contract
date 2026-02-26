@@ -31,14 +31,12 @@ for var in RPC_URL DEV_ACCOUNT ISSUER; do
   fi
 done
 
-# secp256k1 generator point G (compressed, 33 bytes) — valid default consensus key.
 CONSENSUS_PUBKEY="${CONSENSUS_PUBKEY:-0x0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798}"
 SKIP_RELAYER_CHECK="${SKIP_RELAYER_CHECK:-0}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
-# ── 1. generate fresh random keypairs ─────────────────────────────────────────
 header "Generating fresh keypairs"
 
 new_wallet() {
@@ -53,14 +51,9 @@ new_wallet() {
 read -r WITHDRAWAL_ADDR WITHDRAWAL_PK <<< "$(new_wallet)"
 read -r DELEGATE_ADDR   DELEGATE_PK   <<< "$(new_wallet)"
 
-# DELEGATE_KEY (bytes32): delegate EVM address zero-padded to 32 bytes.
-DELEGATE_KEY="0x000000000000000000000000${DELEGATE_ADDR#0x}"
-
 ok "Withdrawal : $WITHDRAWAL_ADDR"
 ok "Delegate   : $DELEGATE_ADDR"
-ok "DelegateKey: $DELEGATE_KEY"
 
-# ── 2. fund from the dev account ──────────────────────────────────────────────
 header "Funding accounts"
 
 cast send \
@@ -79,12 +72,11 @@ cast send \
   --value 1ether > /dev/null
 ok "Funded $DELEGATE_ADDR with 1 ETH"
 
-# ── 3. create attestation ─────────────────────────────────────────────────────
 header "Creating attestation"
 
 CREATE_OUT=$(ISSUER="$ISSUER" \
   CONSENSUS_PUBKEY="$CONSENSUS_PUBKEY" \
-  DELEGATE_KEY="$DELEGATE_KEY" \
+  DELEGATE_KEY="$DELEGATE_ADDR" \
   forge script script/CreateAttestation.s.sol \
     --rpc-url "$RPC_URL" \
     --private-key "$WITHDRAWAL_PK" \
@@ -95,7 +87,6 @@ ATTESTATION_ID=$(echo "$CREATE_OUT" | grep -E "Attestation ID:" | awk '{print $N
 [ -z "$ATTESTATION_ID" ] && { err "Could not parse ATTESTATION_ID"; exit 1; }
 ok "ATTESTATION_ID = $ATTESTATION_ID"
 
-# ── 4. submit withdrawal + delegate signatures ────────────────────────────────
 header "Submitting signatures"
 
 SUBMIT_OUT=$(ISSUER="$ISSUER" \
@@ -121,14 +112,12 @@ EOF
 )
 ok "ExtraData hex    = $EXTRADATA_HEX"
 
-# ── 5. set miner extraData ────────────────────────────────────────────────────
 # miner_setExtra expects the plain ASCII string, not hex bytes.
 header "Setting miner extraData"
 
 cast rpc miner_setExtra "$EXTRADATA_STR" --rpc-url "$RPC_URL"
 ok "miner_setExtra accepted"
 
-# ── 6. mine a block ───────────────────────────────────────────────────────────
 header "Mining a block"
 
 cast send \
@@ -139,7 +128,6 @@ cast send \
   --value 1wei > /dev/null
 ok "Block mined"
 
-# ── 7. verify block.extraData ─────────────────────────────────────────────────
 header "Verifying block.extraData"
 
 BLOCK_EXTRA=$(curl -s -X POST "$RPC_URL" \
@@ -155,16 +143,6 @@ else
   err "Unexpected extraData — expected 0x5348... prefix"
 fi
 
-# ── 8. relayer simulation (optional) ─────────────────────────────────────────
-if [ "$SKIP_RELAYER_CHECK" != "1" ]; then
-  header "Relayer simulation (RelayerFromExtraData)"
-  ISSUER="$ISSUER" \
-  EXTRA_DATA="$EXTRADATA_HEX" \
-  forge script script/RelayerFromExtraData.s.sol \
-    --rpc-url "$RPC_URL"
-fi
-
-# ── summary ───────────────────────────────────────────────────────────────────
 header "Done"
 info "ATTESTATION_ID  = $ATTESTATION_ID"
 info "Withdrawal addr = $WITHDRAWAL_ADDR"

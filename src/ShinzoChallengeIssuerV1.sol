@@ -11,7 +11,7 @@ contract ShinzoChallengeIssuerV1 {
 
     bytes32 public constant ATTESTATION_TYPEHASH =
         keccak256(
-            "AttestationChallenge(uint256 attestationId,address withdrawalAddress,bytes32 delegateKey,bytes32 consensusKeyHash,uint64 createdAt,uint64 signatureDeadline)"
+            "AttestationChallenge(uint256 attestationId,address withdrawalAddress,address delegateKey,bytes32 consensusKeyHash,uint64 createdAt,uint64 signatureDeadline)"
         );
 
     bytes32 public immutable DOMAIN_SEPARATOR;
@@ -31,7 +31,7 @@ contract ShinzoChallengeIssuerV1 {
 
     struct Attestation {
         address withdrawalAddress;
-        bytes32 delegateKey;
+        address delegateKey;
         bytes   consensusPubKey;
         uint64  createdAt;
         uint64  signatureDeadline;
@@ -52,7 +52,7 @@ contract ShinzoChallengeIssuerV1 {
      * @param attestationId       Auto-incremented attestation identifier.
      * @param withdrawalAddress   The msg.sender who created the attestation (validator).
      * @param consensusKeyHash    keccak256 of the raw consensus public key bytes.
-     * @param delegateKey         The delegate key (address zero-padded to bytes32).
+     * @param delegateKey         The delegate's EVM address.
      * @param signatureDeadline   Unix timestamp after which signatures are no longer accepted.
      * @param digest              EIP-712 typed-data digest that must be signed by both parties.
      */
@@ -60,7 +60,7 @@ contract ShinzoChallengeIssuerV1 {
         uint256 indexed attestationId,
         address indexed withdrawalAddress,
         bytes32 indexed consensusKeyHash,
-        bytes32 delegateKey,
+        address delegateKey,
         uint64  signatureDeadline,
         bytes32 digest
     );
@@ -95,13 +95,13 @@ contract ShinzoChallengeIssuerV1 {
      *
      * @param  consensusPubKeyBytes  Compressed (33 bytes) or uncompressed (65 bytes) secp256k1
      *                               consensus public key of the validator.
-     * @param  delegateKey           Delegate address zero-padded to bytes32. This is the key
-     *                               that will co-sign the attestation digest.
+     * @param  delegateKey           EVM address of the delegate that will co-sign the
+     *                               attestation digest.
      * @return attestationId         Auto-incremented identifier for this attestation.
      * @return digest                EIP-712 typed-data digest that both the withdrawal address
      *                               and the delegate must sign before the signature deadline.
      */
-    function createAttestation(bytes calldata consensusPubKeyBytes, bytes32 delegateKey)
+    function createAttestation(bytes calldata consensusPubKeyBytes, address delegateKey)
         external
         returns (uint256 attestationId, bytes32 digest)
     {
@@ -109,7 +109,7 @@ contract ShinzoChallengeIssuerV1 {
             consensusPubKeyBytes.length == 33 || consensusPubKeyBytes.length == 65,
             "bad pubkey len"
         );
-        require(delegateKey != bytes32(0), "delegate=0");
+        require(delegateKey != address(0), "delegate=0");
 
         address withdrawalAddress = msg.sender;
 
@@ -240,7 +240,7 @@ contract ShinzoChallengeIssuerV1 {
         view
         returns (
             address withdrawalAddress,
-            bytes32 delegateKey,
+            address delegateKey,
             bytes memory consensusPubKey,
             uint64  createdAt,
             uint64  signatureDeadline,
@@ -296,7 +296,7 @@ contract ShinzoChallengeIssuerV1 {
     function _attestationDigest(
         uint256 attestationId,
         address withdrawalAddress,
-        bytes32 delegateKey,
+        address delegateKey,
         bytes32 consensusKeyHash,
         uint64  createdAt,
         uint64  signatureDeadline

@@ -9,7 +9,7 @@ import {ShinzoChallengeIssuerV1} from "../src/ShinzoChallengeIssuerV1.sol";
 // Required env:
 //   ISSUER          - address of the deployed ShinzoChallengeIssuerV1
 //   CONSENSUS_PUBKEY - hex-encoded consensus public key bytes (e.g. 0x04abcd...)
-//   DELEGATE_KEY    - bytes32 identifying the Shinzo/Cosmos delegate key (e.g. 0x1234...)
+//   DELEGATE_KEY    - address of the delegate (e.g. 0x1234...)
 //
 // forge script script/CreateAttestation.s.sol \
 //   --rpc-url $RPC_URL --private-key $WITHDRAWAL_PK --broadcast
@@ -21,7 +21,7 @@ contract CreateAttestation is Script {
         );
 
         bytes   memory consensusPubKey = vm.envBytes("CONSENSUS_PUBKEY");
-        bytes32        delegateKey     = vm.envBytes32("DELEGATE_KEY");
+        address        delegateKey     = vm.envAddress("DELEGATE_KEY");
 
         vm.startBroadcast();
 
